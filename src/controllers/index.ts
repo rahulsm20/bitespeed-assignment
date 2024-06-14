@@ -204,16 +204,24 @@ export const getContacts = async (req: Request, res: Response) => {
         secondaryContacts: true,
       },
     });
-    const response = contacts.map((contact) => ({
+    const response = contacts.map((contact: any) => ({
       id: contact.id,
       primaryContactId: contact.linkedId,
-      emails: [...new Set(contact.secondaryContacts.map(({ email }) => email))],
-      phoneNumbers: [
+      emails: [
         ...new Set(
-          contact.secondaryContacts.map(({ phoneNumber }) => phoneNumber)
+          contact.secondaryContacts.map(({ email }: { email: string }) => email)
         ),
       ],
-      secondaryContactIds: contact.secondaryContacts.map(({ id }) => id),
+      phoneNumbers: [
+        ...new Set(
+          contact.secondaryContacts.map(
+            ({ phoneNumber }: { phoneNumber: string }) => phoneNumber
+          )
+        ),
+      ],
+      secondaryContactIds: contact.secondaryContacts.map(
+        ({ id }: { id: string }) => id
+      ),
     }));
     return res.status(200).json(response);
   } catch (error) {
