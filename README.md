@@ -23,6 +23,12 @@
 
 ![system-design](./images/identity.PNG)
 
+- Features
+  - Redis for caching requests
+    - Reduced subsequent response time from an average of ~3000ms to ~400ms i.e an 86% decrease.
+  - Containerization
+    - Used Docker to containerize application which helps in ease of deployment, development and future scaling.
+
 ### Setup locally
 
 - Clone repo
