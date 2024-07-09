@@ -45,6 +45,10 @@
   PORT=3000
   ```
 
+- Run prisma migrations
+  ```
+  npx prisma migrate deploy
+  ```
 - Run in dev mode
   ```
   npm run dev
