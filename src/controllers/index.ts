@@ -1,195 +1,162 @@
+import { Contact } from "@prisma/client";
+import dayjs from "dayjs";
 import { Request, Response } from "express";
 import { prisma } from "../../prisma/client";
-import { Contact, LinkPrecedence } from "../../types";
-import { contactInclude, handleCachedContact, mapToResponse } from "../utils";
-import { getCachedContact, redisClient } from "../utils/redis";
+import { LinkPrecedence } from "../../types";
+import { contactInclude, findPrimaryContact, mapToResponse } from "../utils";
 
 export const identityReconciler = async (req: Request, res: Response) => {
   try {
     const data = req.body;
-    if (!data || (!data.phoneNumber && !data.email)) {
+    const { phoneNumber, email } = data;
+    if (!phoneNumber && !email) {
       return res.status(400).json("Invalid request");
     }
-    const cacheKey = JSON.stringify(data);
-    const cachedContact = await getCachedContact(cacheKey);
-
-    if (cachedContact) {
-      console.log("fetching from cache: ", JSON.parse(cachedContact));
-      return res.status(200).json({ contact: JSON.parse(cachedContact) });
-    }
-
-    if (!data.phoneNumber) {
-      const existingContact = await prisma.contact.findFirst({
-        where: {
-          email: data.email,
-        },
-        include: contactInclude,
-      });
-      if (existingContact) {
-        const response = await handleCachedContact(
-          `${JSON.stringify(data)}`,
-          JSON.stringify(mapToResponse(existingContact))
-        );
-        return res.status(200).json({ contact: response });
-      }
-      return res.status(404).json({
-        error: "Contact not found or insufficient data to create a new one",
-      });
-    }
-    if (!data.email) {
-      const existingContact = await prisma.contact.findFirst({
-        where: {
-          phoneNumber: data.phoneNumber,
-        },
-        include: contactInclude,
-      });
-      if (existingContact) {
-        const response = await handleCachedContact(
-          `${JSON.stringify(data)}`,
-          JSON.stringify(mapToResponse(existingContact))
-        );
-        return res.status(200).json({ contact: response });
-      }
-      return res.status(404).json({
-        error: "Contact not found or insufficient data to create a new one",
-      });
-    }
-
-    const sameContact = await prisma.contact.findFirst({
-      where: {
-        AND: [{ phoneNumber: data.phoneNumber }, { email: data.email }],
-      },
-      include: contactInclude,
-    });
-    if (sameContact) {
-      return res.status(200).json({ contact: mapToResponse(sameContact) });
-    }
-
     const existingContact = await prisma.contact.findFirst({
-      where: {
-        OR: [{ phoneNumber: data.phoneNumber }, { email: data.email }],
-      },
+      where: { phoneNumber, email },
+      include: contactInclude,
     });
 
     if (existingContact) {
-      if (
-        existingContact.phoneNumber == data.phoneNumber &&
-        existingContact.email === data.email
-      ) {
-        await redisClient.set(
-          `${JSON.stringify(data)}`,
-          JSON.stringify(mapToResponse(existingContact))
-        );
-        return res
-          .status(200)
-          .json({ contact: mapToResponse(existingContact) });
-      }
+      const response = mapToResponse(existingContact);
+      return res.status(200).json({ contact: response });
+    }
 
-      let updateData: Contact = {
-        ...existingContact,
+    let relatedContacts = await prisma.contact.findMany({
+      where: { OR: [{ phoneNumber }, { email }] },
+      orderBy: {
+        createdAt: "asc",
+      },
+      include: contactInclude,
+    });
+    let primaryContact: Contact | undefined;
+    if (relatedContacts && relatedContacts.length) {
+      primaryContact = await findPrimaryContact(relatedContacts);
+      let phoneNumbers: (string | null)[] = relatedContacts.map(
+        ({ phoneNumber }) => phoneNumber
+      );
+
+      let emails: (string | null)[] = relatedContacts.map(({ email }) => email);
+      if (!phoneNumbers.includes(phoneNumber) || !emails.includes(email)) {
+        const newConnectedContact = await prisma.contact.create({
+          data: {
+            phoneNumber,
+            email,
+            linkedId: primaryContact?.id,
+            linkPrecedence: LinkPrecedence.secondary,
+          },
+          include: contactInclude,
+        });
+        const response = mapToResponse(newConnectedContact);
+        return res.status(200).json({ contact: response });
+      }
+      let paramToSearchFor =
+        primaryContact?.phoneNumber != phoneNumber
+          ? { type: "phoneNumber", value: phoneNumber }
+          : { type: "email", value: email };
+      const contactToBeUpdated = await prisma.contact.findFirst({
+        where: {
+          NOT: { id: primaryContact?.id },
+          [paramToSearchFor.type]: paramToSearchFor.value,
+        },
+      });
+      let updateData = {
+        linkedId: primaryContact?.id,
         linkPrecedence: LinkPrecedence.secondary,
-        linkedId: existingContact.id,
       };
 
-      if (existingContact.linkPrecedence === LinkPrecedence.secondary) {
-        updateData.linkedId = existingContact.linkedId;
-      }
-
-      if (existingContact.phoneNumber !== data.phoneNumber) {
-        updateData.phoneNumber = data.phoneNumber;
-        const primaryContact = await prisma.contact.findFirst({
-          where: {
-            OR: [{ phoneNumber: data.phoneNumber }, { email: data.email }],
-            linkPrecedence: LinkPrecedence.primary,
-            id: {
-              not: existingContact.id,
-            },
-          },
-          include: contactInclude,
+      if (contactToBeUpdated?.linkPrecedence == LinkPrecedence.secondary) {
+        const associatedPrimaryContact = await prisma.contact.findUnique({
+          where: { id: contactToBeUpdated.linkedId || undefined },
         });
-
-        if (primaryContact) {
-          const contact = await prisma.contact.update({
-            where: {
-              id: existingContact.id,
-            },
-            data: {
-              phoneNumber: data.phoneNumber,
-              email: data.email,
-              linkPrecedence: LinkPrecedence.secondary,
-              linkedId: primaryContact.id,
-            },
-            include: contactInclude,
-          });
-
-          const response = await handleCachedContact(
-            `${JSON.stringify(data)}`,
-            JSON.stringify(mapToResponse(contact))
-          );
-          return res.status(200).json({ contact: response });
+        if (
+          associatedPrimaryContact &&
+          associatedPrimaryContact?.createdAt !== undefined &&
+          primaryContact?.createdAt !== undefined
+        ) {
+          if (
+            dayjs(associatedPrimaryContact.createdAt).isAfter(
+              dayjs(primaryContact.createdAt)
+            )
+          ) {
+            updateData.linkedId = primaryContact.id;
+            await prisma.contact.update({
+              where: { id: associatedPrimaryContact.id },
+              data: updateData,
+              include: contactInclude,
+            });
+          }
         }
       }
-
-      if (existingContact.email !== data.email) {
-        const primaryContact = await prisma.contact.findFirst({
-          where: {
-            OR: [{ phoneNumber: data.phoneNumber }, { email: data.email }],
-            linkPrecedence: LinkPrecedence.primary,
-            id: {
-              not: existingContact.id,
-            },
-          },
-          include: contactInclude,
-        });
-        updateData.email = data.email;
-
-        if (primaryContact) {
-          const contact = await prisma.contact.update({
-            where: {
-              id: existingContact.id,
-            },
-            data: {
-              linkPrecedence: LinkPrecedence.secondary,
-              linkedId: primaryContact.id,
-            },
-            include: contactInclude,
-          });
-
-          const response = await handleCachedContact(
-            `${JSON.stringify(data)}`,
-            JSON.stringify(mapToResponse(primaryContact))
-          );
-          return res.status(200).json({ contact: response });
-        }
-      }
-
-      delete updateData.createdAt;
-      delete updateData.updatedAt;
-      delete updateData.id;
-
-      const contact = await prisma.contact.create({
+      await prisma.contact.update({
+        where: { id: contactToBeUpdated?.id },
         data: updateData,
         include: contactInclude,
       });
-
-      const response = await handleCachedContact(
-        `${JSON.stringify(data)}`,
-        JSON.stringify(mapToResponse(contact))
-      );
-
-      return res.status(200).json({ contact: response });
-    } else {
-      const contact = await prisma.contact.create({
-        data,
+      relatedContacts = [...relatedContacts];
+      const updatedRelatedContacts = await prisma.contact.findMany({
+        where: { OR: [{ phoneNumber }, { email }] },
+        orderBy: {
+          createdAt: "asc",
+        },
         include: contactInclude,
       });
-
-      const response = await handleCachedContact(
-        `${JSON.stringify(data)}`,
-        JSON.stringify(mapToResponse(contact))
-      );
+      relatedContacts.push(...updatedRelatedContacts);
+      relatedContacts.forEach(async (c) => {
+        if (c.id !== primaryContact?.id) {
+          await prisma.contact.update({
+            where: { id: c.id },
+            data: {
+              linkedId: primaryContact?.id,
+              linkPrecedence: LinkPrecedence.secondary,
+            },
+          });
+        }
+        let { primaryContact: newPrimaryContact, secondaryContacts = [] } = c;
+        secondaryContacts.map(async (sc) => {
+          if (
+            c.id !== primaryContact?.id &&
+            dayjs(sc.createdAt).isAfter(primaryContact?.createdAt)
+          ) {
+            await prisma.contact.update({
+              where: { id: sc.id },
+              data: {
+                linkedId: primaryContact?.id,
+                linkPrecedence: LinkPrecedence.secondary,
+              },
+            });
+          }
+        });
+        if (newPrimaryContact?.secondaryContacts) {
+          for (const c of newPrimaryContact?.secondaryContacts) {
+            if (
+              c.id !== primaryContact?.id &&
+              dayjs(c.createdAt).isAfter(primaryContact?.createdAt)
+            ) {
+              await prisma.contact.update({
+                where: { id: c.id },
+                data: {
+                  linkedId: primaryContact?.id,
+                  linkPrecedence: LinkPrecedence.secondary,
+                },
+              });
+            }
+          }
+        }
+      });
+      const updatedPrimaryContact = await prisma.contact.findUnique({
+        where: { id: primaryContact?.id },
+        include: contactInclude,
+      });
+      const response = mapToResponse(updatedPrimaryContact);
       return res.status(200).json({ contact: response });
     }
+    const newContact = await prisma.contact.create({
+      data: { phoneNumber, email },
+      include: contactInclude,
+    });
+    const response = mapToResponse(newContact);
+    return res.status(200).json({ contact: response });
   } catch (err) {
     console.error(err);
     return res.status(500).send("Internal server error");
@@ -199,10 +166,7 @@ export const identityReconciler = async (req: Request, res: Response) => {
 export const getContacts = async (req: Request, res: Response) => {
   try {
     const contacts = await prisma.contact.findMany({
-      include: {
-        primaryContact: true,
-        secondaryContacts: true,
-      },
+      include: contactInclude,
     });
     const response = contacts.map((contact: any) => ({
       id: contact.id,

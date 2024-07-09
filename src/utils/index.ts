@@ -1,5 +1,8 @@
+import { Contact } from "@prisma/client";
+import dayjs from "dayjs";
+import { prisma } from "../../prisma/client";
 import { LinkPrecedence } from "../../types";
-import { getCachedContact, setCachedContact } from "./redis";
+import { setCachedContact } from "./redis";
 
 export const mapToResponse = (contact: any) => {
   const { secondaryContacts = [], primaryContact, linkPrecedence } = contact;
@@ -35,8 +38,16 @@ export const mapToResponse = (contact: any) => {
       ...primarySecondaryContacts.map(({ email }: { email: string }) => email)
     );
   }
-  const uniqueEmails = [...new Set(emails)];
-  const uniquePhoneNumbers = [...new Set(phoneNumbers)];
+  let uniqueEmails = [...new Set(emails)];
+  uniqueEmails = uniqueEmails.sort((a: unknown, b: unknown) =>
+    String(a).localeCompare(String(b))
+  );
+  let uniquePhoneNumbers = [...new Set(phoneNumbers)];
+  uniquePhoneNumbers = uniquePhoneNumbers.sort((a: unknown, b: unknown) =>
+    String(a).localeCompare(String(b))
+  );
+  secondaryContactIds.sort((a: number, b: number) => a - b);
+  secondaryContactIds = [...new Set(secondaryContactIds)];
   return {
     primaryContactId:
       linkPrecedence == LinkPrecedence.primary ? contact.id : contact.linkedId,
@@ -60,3 +71,26 @@ export const handleCachedContact = async (cacheKey: any, contact: any) => {
   await setCachedContact(cacheKey, JSON.stringify(mappedContact));
   return mappedContact;
 };
+
+export async function findPrimaryContact(relatedContacts: Contact[]) {
+  let earliestDate = dayjs();
+  let primaryContact;
+  for (const c of relatedContacts) {
+    const { primaryContactId } = mapToResponse(c);
+    const contact = await prisma.contact.findFirst({
+      where: { id: primaryContactId },
+    });
+    if (contact) {
+      const isBefore = dayjs(contact.createdAt).isBefore(earliestDate);
+      console.log(
+        isBefore,
+        dayjs(contact.createdAt).toISOString(),
+        earliestDate.toISOString()
+      );
+      earliestDate = isBefore ? dayjs(contact.createdAt) : earliestDate;
+      primaryContact = isBefore ? contact : primaryContact;
+    }
+  }
+  console.log("primary:", primaryContact);
+  return primaryContact;
+}

@@ -11,4 +11,5 @@ export type Contact = {
   updatedAt?: Date;
   id?: number;
   linkedId?: number | null;
+  primaryContact: Contact | null;
 };
