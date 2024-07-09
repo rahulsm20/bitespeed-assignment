@@ -1,6 +1,6 @@
 # Identity Reconciler Service
 
-- This has been dockerized and deployed on GCP Cloud Run here - [Link](https://bitespeed-yx2x2yqpua-uw.a.run.app/)
+- This has been dockerized and deployed on GCP Cloud Run here - [Link](https://identity-reconciler-service-yx2x2yqpua-uw.a.run.app)
 
 ### Index
 
