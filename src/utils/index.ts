@@ -2,7 +2,6 @@ import { Contact } from "@prisma/client";
 import dayjs from "dayjs";
 import { prisma } from "../../prisma/client";
 import { LinkPrecedence } from "../../types";
-import { setCachedContact } from "./redis";
 
 export const mapToResponse = (contact: any) => {
   const { secondaryContacts = [], primaryContact, linkPrecedence } = contact;
@@ -64,12 +63,6 @@ export const contactInclude = {
     },
   },
   secondaryContacts: true,
-};
-
-export const handleCachedContact = async (cacheKey: any, contact: any) => {
-  const mappedContact = JSON.parse(contact);
-  await setCachedContact(cacheKey, JSON.stringify(mappedContact));
-  return mappedContact;
 };
 
 export async function findPrimaryContact(relatedContacts: Contact[]) {
