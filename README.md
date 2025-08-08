@@ -31,30 +31,35 @@
   ```
 
 - Install packages
+
   ```
   cd bitespeed-assignment && npm i
   ```
+
 - Setup env variables
 
   ```
   DIRECT_URL=""
   DATABASE_URL=""
-  REDIS_HOST=""
-  REDIS_PASS=""
-  REDIS_PORT=""
   PORT=3000
   ```
 
 - Run prisma migrations
+
   ```
   npx prisma migrate deploy
   ```
+
 - Run in dev mode
+
   ```
   npm run dev
   ```
+
   OR
+
 - Run using docker
+
   ```
     docker build -t bitespeed-server . && docker run -p 3000:3000 bitespeed-server
   ```
